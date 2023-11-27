@@ -83,15 +83,15 @@ int main(int argc, char *argv[])
     QApplication a(argc, argv);
 
     // camera image size
-    int width = 640;
-    int height = 512;
+    int width = 1920;
+    int height = 1080;
     
     // near and far plane of the OpenGL view frustum
     float zNear = 10.0;
     float zFar = 10000.0;
     
     // camera instrinsics
-    Matx33f K = Matx33f(650.048, 0, 324.328, 0, 647.183, 257.323, 0, 0, 1);
+    Matx33f K = Matx33f(1.5999999e+03, 0, 960, 0, 1.5999999e+03, 540, 0, 0, 1);
     Matx14f distCoeffs =  Matx14f(0.0, 0.0, 0.0, 0.0);
     
     // distances for the pose detection template generation
@@ -99,7 +99,7 @@ int main(int argc, char *argv[])
     
     // load 3D objects
     vector<Object3D*> objects;
-    objects.push_back(new Object3D("data/squirrel_demo_low.obj", 15, -35, 515, 55, -20, 205, 1.0, 0.55f, distances));
+    objects.push_back(new Object3D("data/squirrel.obj", 0, 1, 600, 0, 0, 180, 1, 0.5f, distances));
     //objects.push_back(new Object3D("data/a_second_model.obj", -50, 0, 600, 30, 0, 180, 1.0, 0.55f, distances2));
     
     // create the pose estimator
@@ -119,7 +119,7 @@ int main(int argc, char *argv[])
     while(true)
     {
         // obtain an input image
-        frame = imread("data/frame.png");
+        frame = imread("data/frame.jpg");
         
         // the main pose uodate call
         poseEstimator->estimatePoses(frame, false, true);
