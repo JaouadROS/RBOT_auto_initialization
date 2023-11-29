@@ -81,6 +81,39 @@ cv::Mat drawResultOverlay(const vector<Object3D*>& objects, const cv::Mat& frame
     return result;
 }
 
+// Function to calculate angle of a line formed by two points
+float calculateAngle(const Point2f& a, const Point2f& b) {
+    float angle = atan2(b.y - a.y, b.x - a.x) * 180.0 / CV_PI;
+    return angle;
+}
+
+Point2f calculateCentroid(const vector<Point>& contour) {
+    Moments m = moments(contour, false);
+    return Point2f(m.m10 / m.m00, m.m01 / m.m00);
+}
+
+std::vector<cv::Point> findLargestContour(const std::vector<std::vector<cv::Point>>& contours) {
+    double maxArea = 0;
+    int maxAreaIdx = -1;
+
+    for (int i = 0; i < contours.size(); i++) {
+        double area = cv::contourArea(contours[i]);
+        if (area > maxArea) {
+            maxArea = area;
+            maxAreaIdx = i;
+        }
+    }
+
+    // Create a vector to store the largest contour
+    std::vector<cv::Point> largestContour;
+
+    if (maxAreaIdx != -1) {
+        largestContour = contours[maxAreaIdx];
+    }
+
+    return largestContour;
+}
+
 // Define the skeleton and color mappings
 std::vector<std::vector<int>> skeleton = {{16, 14}, {14, 12}, {17, 15}, {15, 13}, {12, 13}, {6, 12}, {7, 13}, {6, 7}, {6, 8}, {7, 9}, {8, 10}, {9, 11}, {2, 3}, {1, 2}, {1, 3}, {2, 4}, {3, 5}, {4, 6}, {5, 7}};
 Mat plot_results(cv::Mat& img, std::vector<YoloResults>& results,
@@ -197,6 +230,180 @@ Mat plot_results(cv::Mat& img, std::vector<YoloResults>& results,
     return mask;
 }
 
+void alignObject(PoseEstimator6D* poseEstimator, vector<Object3D*>& objects, Mat& frame, Mat& mask, float& tx, float& ty, float& tz, float& alpha, float& beta, float& gamma) {
+    std::vector<cv::Point> contour_mask_gray;
+    Mat mask_gray;
+    std::vector<cv::Point> contour_projected_model;
+
+    // Initializations and constants
+    float step_size = 0.1; // For tx and ty
+    float tz_step_size = 0.1; // For tz
+    float gamma_step_size = 0.5; // Adjust step size for gamma as needed
+    float gamma_alignment_threshold = 2.0; // Threshold for corner distance, adjust as needed
+
+    bool tx_ty_aligned = false;
+    bool tz_aligned = false;
+    bool gamma_aligned = false;
+
+    while (true) {
+        // Generate the transformation matrix
+        Matx44f T_cm = Transformations::translationMatrix(tx, ty, tz)
+                        * Transformations::rotationMatrix(alpha, Vec3f(1, 0, 0))
+                        * Transformations::rotationMatrix(beta, Vec3f(0, 1, 0))
+                        * Transformations::rotationMatrix(gamma, Vec3f(0, 0, 1))
+                        * Matx44f::eye();
+
+        objects[0]->setPose(T_cm);
+
+        // Find contours in the grayscale image
+        Mat result;
+        frame.copyTo(result);
+        cvtColor(mask, mask_gray, cv::COLOR_BGR2GRAY);
+        std::vector<std::vector<cv::Point>> contours_mask_gray;
+        findContours(mask_gray, contours_mask_gray, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        contour_mask_gray = findLargestContour(contours_mask_gray);
+        cv::drawContours(result, contours_mask_gray, -1, cv::Scalar(0, 0, 255), 2);
+
+        // the main pose update call
+        poseEstimator->estimatePoses(frame, false, true);
+        Mat projected_object = Mat::zeros(frame.size(), frame.type());
+        projected_object = drawResultOverlay(objects, projected_object);
+
+        // Find contours in the grayscale image
+        Mat gray;
+        cvtColor(projected_object, gray, cv::COLOR_BGR2GRAY);
+        std::vector<std::vector<cv::Point>> contours_projected_model;
+        findContours(gray, contours_projected_model, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        contour_projected_model = findLargestContour(contours_projected_model);
+        cv::drawContours(result, contours_projected_model, -1, cv::Scalar(0, 255, 0), 2);
+
+        // Draw the contours and calculate centroids
+        Point2f centroid_proj, centroid_det;
+        if (!contours_projected_model.empty()) {
+            centroid_proj = calculateCentroid(contour_projected_model);
+            circle(result, centroid_proj, 5, Scalar(0, 255, 0), -1); // Centroid as green circle
+        }
+        if (!contours_mask_gray.empty()) {
+            centroid_det = calculateCentroid(contour_mask_gray);
+            circle(result, centroid_det, 5, Scalar(0, 0, 255), -1); // Centroid as red circle
+        }
+
+        // Draw the contours and calculate centroids
+        Rect boundingBox_proj, boundingBox_det;
+        if (!contours_projected_model.empty()) {
+            boundingBox_proj = boundingRect(contour_projected_model);
+            rectangle(result, boundingBox_proj, Scalar(0, 255, 0), 2); // Projected bounding box in green
+        }
+        if (!contours_mask_gray.empty()) {
+            boundingBox_det = boundingRect(contour_mask_gray);
+            rectangle(result, boundingBox_det, Scalar(0, 0, 255), 2); // Detected bounding box in red
+        }
+
+        if (!tx_ty_aligned) {
+            // Adjust tx and ty based on the centroids
+            if (centroid_proj.x < centroid_det.x) tx += step_size;
+            else if (centroid_proj.x > centroid_det.x) tx -= step_size;
+
+            if (centroid_proj.y < centroid_det.y) ty += step_size;
+            else if (centroid_proj.y > centroid_det.y) ty -= step_size;
+
+            float distance = norm(centroid_proj - centroid_det);
+
+            const float alignmentThreshold = 1.0;
+            if (distance < alignmentThreshold) {
+                tx_ty_aligned = true;
+                cout << "Alignment achieved for tx and ty." << endl;
+            }
+        }
+        else if (!tz_aligned) {
+            // Adjust tz based on the bounding box sizes
+            float area_proj = boundingBox_proj.area();
+            float area_det = boundingBox_det.area();
+
+            const float tz_alignment_threshold = 0.05;
+            // Calculate the relative difference in area
+            float relative_difference = abs(area_proj - area_det) / area_det;
+
+            if (relative_difference < tz_alignment_threshold) {
+                tz_aligned = true;
+                cout << "Alignment achieved for tz with value: " << tz << endl;
+            }
+            else {
+                // Adjust tz based on whether the projected area is smaller or larger
+                if (area_proj < area_det) tz -= tz_step_size;
+                else if (area_proj > area_det) tz += tz_step_size;
+            }
+        }
+        else if (!gamma_aligned) {
+            // Calculate diagonal angles for both bounding boxes
+            float angle_proj = calculateAngle(boundingBox_proj.tl(), boundingBox_proj.br());
+            float angle_det = calculateAngle(boundingBox_det.tl(), boundingBox_det.br());
+
+            // Determine if the projected object needs to rotate clockwise or counterclockwise
+            float angle_difference = angle_proj - angle_det;
+
+            if (abs(angle_difference) < gamma_alignment_threshold) {
+                gamma_aligned = true;
+                cout << "Alignment achieved for gamma with value: " << gamma << endl;
+                tx_ty_aligned = false; // go back to tx ty correction due to gamma rotation
+            }
+            else {
+                // Adjust gamma based on the angle difference
+                if (angle_difference > 0) gamma -= gamma_step_size;
+                else gamma += gamma_step_size;
+            }
+        }
+
+        if (tx_ty_aligned && tz_aligned && gamma_aligned)
+            break;
+
+        cv::imshow("result", result);
+        cv::waitKey(1);
+    }
+}
+
+void adjustAlphaBeta(PoseEstimator6D* poseEstimator, vector<Object3D*>& objects, Mat& frame, Mat& mask, float& tx, float& ty, float& tz, float& alpha, float& beta, float& gamma) {
+    const int alpha_beta_range = 20; // Range of values for alpha and beta (-20 to +20)
+    const float step_size = 1;     // Step size for adjusting alpha and beta
+    
+    cv::Mat result;
+    for (int alpha_offset = -alpha_beta_range; alpha_offset <= alpha_beta_range; ++alpha_offset) {
+        for (int beta_offset = -alpha_beta_range; beta_offset <= alpha_beta_range; ++beta_offset) {
+            // Apply the offset values to alpha and beta
+            float new_alpha = alpha_offset * step_size;
+            float new_beta = beta_offset * step_size;
+
+            // Generate the transformation matrix
+            Matx44f T_cm = Transformations::translationMatrix(tx, ty, tz)
+                        * Transformations::rotationMatrix(new_alpha, Vec3f(1, 0, 0))
+                        * Transformations::rotationMatrix(new_beta, Vec3f(0, 1, 0))
+                        * Transformations::rotationMatrix(gamma, Vec3f(0, 0, 1))
+                        * Matx44f::eye();
+
+            objects[0]->setPose(T_cm);
+
+            // Call toggleTracking to check initialization
+            result = drawResultOverlay(objects, frame);
+            poseEstimator->toggleTracking(frame, 0, false);
+
+            cout << "on going: " << objects[0]->isTrackingLost() << " " << new_alpha << " and beta: " << new_beta << endl;
+            cv::imshow("adjustAlphaBeta", result);
+            cv::waitKey(1);
+            if (!objects[0]->isTrackingLost()) {
+                // Initialization is successful
+                cout << "Initialization successful for alpha: " << new_alpha << " and beta: " << new_beta << endl;
+                beta = new_beta;
+                alpha = new_alpha;
+
+                return;
+            }
+        }
+    }
+
+    // If initialization was not successful for any combination of alpha and beta
+    cout << "Initialization for alpha and beta not successful within the specified range." << endl;
+}
+
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
@@ -230,8 +437,6 @@ int main(int argc, char *argv[])
     // active the OpenGL context for the offscreen rendering engine during pose estimation
     RenderingEngine::Instance()->makeCurrent();
     
-    int timeout = 0;
-    
     bool showHelp = true;
     
     Mat frame = imread("data/frame.jpg");//TODO change that later to be the first frame
@@ -256,6 +461,26 @@ int main(int argc, char *argv[])
     Mat mask = plot_results(image_annotated, objs, names, show_shape);
     cv::imshow("imageSegmentation", image_annotated);
 
+    //Start rbot initialization
+    float tx = 10.0, ty = 10.0, tz = 600;
+    float alpha = 0.0, beta = 40.0, gamma = 180;
+
+    cout << "before alignObject: " << objects[0]->isTrackingLost() << " " << alpha << " and beta: " << beta << endl;
+    alignObject(poseEstimator, objects, frame, mask, tx, ty, tz, alpha, beta, gamma);
+    cout << "after alignObject: " << objects[0]->isTrackingLost() << " " << alpha << " and beta: " << beta << endl;
+    adjustAlphaBeta(poseEstimator, objects, frame, mask, tx, ty, tz, alpha, beta, gamma);
+    cout << "after adjustAlphaBeta: " << objects[0]->isTrackingLost() << " " << alpha << " and beta: " << beta << endl;
+
+    //Apply the initialization
+    Matx44f T_cm = Transformations::translationMatrix(tx, ty, tz) // tz = 0 for now, adjust as needed
+                    * Transformations::rotationMatrix(alpha, Vec3f(1, 0, 0)) // alpha = 0 for now, adjust as needed
+                    * Transformations::rotationMatrix(beta, Vec3f(0, 1, 0)) // beta = 0 for now, adjust as needed
+                    * Transformations::rotationMatrix(gamma, Vec3f(0, 0, 1)) // gamma = 0 for now, adjust as needed
+                    * Matx44f::eye();
+
+    objects[0]->setPose(T_cm);
+
+    int timeout = 0;
     while(true)
     {
         // obtain an input image
@@ -264,7 +489,7 @@ int main(int argc, char *argv[])
         // the main pose uodate call
         poseEstimator->estimatePoses(frame, false, true);
         
-        cout << objects[0]->getPose() << endl;
+        //cout << objects[0]->getPose() << endl;
         
         // render the models with the resulting pose estimates ontop of the input image
         Mat result = drawResultOverlay(objects, frame);
@@ -279,6 +504,7 @@ int main(int argc, char *argv[])
         
         int key = waitKey(timeout);
         
+        cout << "Tracking: " << objects[0]->isTrackingLost() << " " << alpha << " and beta: " << beta << endl;
         // start/stop tracking the first object
         if(key == (int)'1')
         {
