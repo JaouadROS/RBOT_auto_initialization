@@ -239,7 +239,7 @@ void alignObject(PoseEstimator6D* poseEstimator, vector<Object3D*>& objects, Mat
     float step_size = 0.1; // For tx and ty
     float tz_step_size = 0.1; // For tz
     float gamma_step_size = 0.5; // Adjust step size for gamma as needed
-    float gamma_alignment_threshold = 2.0; // Threshold for corner distance, adjust as needed
+    float gamma_alignment_threshold = 8.0; // Threshold for corner distance, adjust as needed
 
     bool tx_ty_aligned = false;
     bool tz_aligned = false;
@@ -316,20 +316,27 @@ void alignObject(PoseEstimator6D* poseEstimator, vector<Object3D*>& objects, Mat
             }
         }
         else if (!tz_aligned) {
-            // Adjust tz based on the bounding box sizes
+            // Define a threshold for how close the coordinates need to be
+            const float tz_alignment_threshold_x = 10.0; // Adjust as needed
+            const float tz_alignment_threshold_y = 10.0; // Adjust as needed
+            const float tz_area_alignment_threshold = 0.05; // Adjust as needed
+
+            // Calculate the differences in the x and y coordinates of the bounding boxes
+            float x_difference = abs(boundingBox_proj.x - boundingBox_det.x);
+            float y_difference = abs(boundingBox_proj.y - boundingBox_det.y);
+
+            // Calculate the relative difference in area
             float area_proj = boundingBox_proj.area();
             float area_det = boundingBox_det.area();
+            float area_difference = abs(area_proj - area_det) / area_det;
 
-            const float tz_alignment_threshold = 0.05;
-            // Calculate the relative difference in area
-            float relative_difference = abs(area_proj - area_det) / area_det;
-
-            if (relative_difference < tz_alignment_threshold) {
+            // Check if the differences are within the thresholds
+            if ((area_difference < tz_area_alignment_threshold) || (x_difference < tz_alignment_threshold_x || y_difference < tz_alignment_threshold_y)) {
                 tz_aligned = true;
                 cout << "Alignment achieved for tz with value: " << tz << endl;
             }
             else {
-                // Adjust tz based on whether the projected area is smaller or larger
+                // Adjust tz based on the difference in areas
                 if (area_proj < area_det) tz -= tz_step_size;
                 else if (area_proj > area_det) tz += tz_step_size;
             }
@@ -341,6 +348,7 @@ void alignObject(PoseEstimator6D* poseEstimator, vector<Object3D*>& objects, Mat
 
             // Determine if the projected object needs to rotate clockwise or counterclockwise
             float angle_difference = angle_proj - angle_det;
+            std::cout<<angle_difference<<std::endl;
 
             if (abs(angle_difference) < gamma_alignment_threshold) {
                 gamma_aligned = true;
