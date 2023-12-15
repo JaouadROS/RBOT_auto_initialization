@@ -79,6 +79,7 @@ public:
      *  @param  runs A factor specifiyng how many times the default number of iterations per level are supposed to be performed (default = 1).
      */
     void minimize(std::vector<cv::Mat> &imagePyramid, std::vector<Object3D*> &objects, int runs = 1);
+    void minimize(cv::Mat &image, std::vector<Object3D*> &objects, int runs = 1);
     
 private:
     static OptimizationEngine *instance;
@@ -91,6 +92,7 @@ private:
     int height;
     
     void runIteration(std::vector<Object3D*> &objects, const std::vector<cv::Mat> &imagePyramid, int level);
+    void runIteration(std::vector<Object3D*> &objects, const cv::Mat &image, int level);
     
     void parallel_computeJacobians(Object3D *object, const cv::Mat &frame, const cv::Mat &depth, const cv::Mat &depthInv, const cv::Mat &sdt, const cv::Mat &xyPos, const cv::Rect &roi, const cv::Mat &mask, int m_id, int level, cv::Matx66f &wJTJ, cv::Matx61f &JT, int threads);
     

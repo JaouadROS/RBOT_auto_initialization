@@ -78,7 +78,105 @@ void OptimizationEngine::minimize(vector<Mat>& imagePyramid, vector<Object3D*>& 
     }
 }
 
+void OptimizationEngine::minimize(Mat& image, vector<Object3D*>& objects, int runs)
+{
+    // OPTIMIZATION ITERATIONS
+    
+    // level 0
+    for(int iter = 0; iter < runs*1; iter++)
+    {
+        runIteration(objects, image, 0);
+    }
+}
 
+void OptimizationEngine::runIteration(vector<Object3D*>& objects, const Mat& image, int level)
+{
+    Rect roi;
+    Mat mask, depth, depthInv, sdt, xyPos;
+    Mat croppedMask, croppedDepth, croppedDepthInv;
+    
+    renderingEngine->setLevel(level);
+    
+    int numInitialized = 0;
+    
+    // increase the image pyramid level until the area of the 2D bounding box
+    // of every object is greater than 3000 pixels in the image
+    for(int o = 0; o < objects.size(); o++)
+    {
+        if(objects[o]->isInitialized())
+        {
+            /*roi = compute2DROI(objects[o], Size(width/pow(2, level), height/pow(2, level)), 8);
+            
+            if(roi.area() != 0)
+            {
+                while(roi.area() < 3000 && level > 0)
+                {
+                    level--;
+                    renderingEngine->setLevel(level);
+                    roi = compute2DROI(objects[o], Size(width/pow(2, level), height/pow(2, level)), 8);
+                }
+            }*/
+            numInitialized++;
+        }
+    }
+    
+    // render the common silhouette mask
+    renderingEngine->setLevel(level);
+    renderingEngine->renderSilhouette(vector<Model*>(objects.begin(), objects.end()), GL_FILL);
+    
+    // download the depth buffer
+    depth = renderingEngine->downloadFrame(RenderingEngine::DEPTH);
+    
+    // if more than one object is initialized, download the common silhouette
+    // mask required for occlusion detection
+    if(numInitialized > 1)
+    {
+        mask = renderingEngine->downloadFrame(RenderingEngine::MASK);
+    }
+    else // otherwise for a single object the mask is equal to the depth buffer
+    {
+        mask = depth;
+    }
+    
+    for(int o = 0; o < objects.size(); o++)
+    {
+        if(objects[o]->isInitialized())
+        {
+            // compute the 2D region of interest containing the silhouette of the current object
+            roi = compute2DROI(objects[o], Size(width/pow(2, level), height/pow(2, level)), 8);
+            
+            if(roi.area() == 0)
+            {
+                continue;
+            }
+            
+            // render the individual inverse depth buffer per object
+            renderingEngine->renderSilhouette(objects[o], GL_FILL, true);
+            depthInv = renderingEngine->downloadFrame(RenderingEngine::DEPTH);
+            
+            // crop the images wrt to the 2D roi
+            croppedMask = mask(roi).clone();
+            croppedDepth = depth(roi).clone();
+            croppedDepthInv = depthInv(roi).clone();
+            
+            int m_id = (numInitialized <= 1) ? -1 : objects[o]->getModelID();
+            
+            // compute the 2D signed distance transform of the silhouette
+            SDT2D->computeTransform(croppedMask, sdt, xyPos, 8, m_id);
+            
+            // the hessian approximation
+            Matx66f wJTJ;
+            // the gradient
+            Matx61f JT;
+            
+            // compute the Jacobian terms (i.e. the gradient and the hessian approx.) needed for the Gauss-Newton step
+            parallel_computeJacobians(objects[o], image, croppedDepth, croppedDepthInv, sdt, xyPos, roi, croppedMask, m_id, level, wJTJ, JT, roi.height);
+            
+            // update the pose by computing the Gauss-Newton step
+            applyStepGaussNewton(objects[o], wJTJ, JT);
+        }
+    }
+}
 
 void OptimizationEngine::runIteration(vector<Object3D*>& objects, const vector<Mat>& imagePyramid, int level)
 {
@@ -239,7 +337,7 @@ void OptimizationEngine::applyStepGaussNewton(Object3D* object, const Matx66f& w
 {
     // Gauss-Newton step in se3
     Matx61f delta_xi = -wJTJ.inv(DECOMP_CHOLESKY)*JT;
-    
+
     // get the current pose
     Matx44f T_cm = object->getPose();
     

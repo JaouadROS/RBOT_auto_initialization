@@ -162,16 +162,16 @@ void PoseEstimator6D::estimatePoses(cv::Mat &frame, bool undistortFrame, bool ch
         
         Mat binned;
         parallel_for_(cv::Range(0, 8), Parallel_For_convertToBins(frame, binned, objects[0]->getTCLCHistograms()->getNumBins(), 8));
-        
+
         for(int i = 0; i < objects.size(); i++)
         {
+            setEnergyFunctionValue(i, evaluateEnergyFunction(objects[i], mask, depth, binned, 0, 8));
+
             if(objects[i]->isInitialized())
             {
                 if(!objects[i]->isTrackingLost())
                 {
-                    float e = evaluateEnergyFunction(objects[i], mask, depth, binned, 0, 8);
-                    
-                    if(checkForLoss && (e > objects[i]->getQualityThreshold() || e == 0.0f))
+                    if(checkForLoss && (getEnergyFunctionValue(i) > objects[i]->getQualityThreshold() || getEnergyFunctionValue(i)  == 0.0f))
                     {
                         objects[i]->setTrackingLost(true);
                         objects[i]->setPose(Matx44f());
@@ -186,6 +186,33 @@ void PoseEstimator6D::estimatePoses(cv::Mat &frame, bool undistortFrame, bool ch
                     relocalize(objects[i], imagePyramid);
                 }
             }
+        }
+    }
+}
+
+void PoseEstimator6D::estimatePosesForInitialization(cv::Mat &frame)
+{
+    if(initialized)
+    {
+        optimizationEngine->minimize(frame, objects);
+        
+        renderingEngine->setLevel(0);
+        
+        renderingEngine->renderSilhouette(vector<Model*>(objects.begin(), objects.end()), GL_FILL);
+        
+        Mat mask = renderingEngine->downloadFrame(RenderingEngine::MASK);
+        Mat depth = renderingEngine->downloadFrame(RenderingEngine::DEPTH);
+        
+        float zNear = renderingEngine->getZNear();
+        float zFar = renderingEngine->getZFar();
+        
+        Mat binned;
+        parallel_for_(cv::Range(0, 8), Parallel_For_convertToBins(frame, binned, objects[0]->getTCLCHistograms()->getNumBins(), 8));
+
+        for(int i = 0; i < objects.size(); i++)
+        {
+            objects[i]->getTCLCHistograms()->update(frame, mask, depth, K, zNear, zFar);
+            setEnergyFunctionValue(i, evaluateEnergyFunction(objects[i], mask, depth, binned, 0, 8));
         }
     }
 }

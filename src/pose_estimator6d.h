@@ -108,7 +108,20 @@ public:
      *  @param undistortFrame A flag indicating whether it should be checked for a tracking loss after pose estimation (default = true).
      */
     void estimatePoses(cv::Mat &frame, bool undistortFrame = true, bool checkForLoss = true);
-    
+    void estimatePosesForInitialization(cv::Mat &frame);
+
+    float getEnergyFunctionValue(int key) {
+        auto it = energyFunctionValue.find(key);
+        if (it != energyFunctionValue.end()) {
+            return it->second;
+        }
+        return 0.9f;
+    }
+
+    void setEnergyFunctionValue(int key, float value) {
+        energyFunctionValue[key] = value;
+    }
+
     /**
      *  Resets/stops pose tracking for all objects by clearing the
      *  respective sets of tclc-histograms.
@@ -137,7 +150,9 @@ private:
     bool initialized;
     
     int tmp;
-    
+
+    std::map<int, float> energyFunctionValue;
+
     void relocalize(Object3D *object, std::vector<cv::Mat> &imagePyramid);
     
     cv::Rect computeBoundingBox(const std::vector<cv::Point3i> &centersIDs, int offset, int level, const cv::Size &maxSize);
